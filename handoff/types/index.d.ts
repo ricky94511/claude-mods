@@ -9,7 +9,7 @@ declare module 'claude-code' {
       percent: number | null
       isHidden: boolean
       pending: Pending | null
-      isNotified: boolean
+      nextAskAt: number | null
     }
   }
 }

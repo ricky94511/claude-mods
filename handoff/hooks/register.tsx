@@ -7,7 +7,8 @@ const phase = atom({ plugin: 'handoff', key: 'phase' } as const, 'idle' as Phase
 const percent = atom({ plugin: 'handoff', key: 'percent' } as const, null as number | null)
 const isHidden = atom({ plugin: 'handoff', key: 'isHidden' } as const, false)
 const pending = atom({ plugin: 'handoff', key: 'pending' } as const, null as Pending | null)
-const isNotified = atom({ plugin: 'handoff', key: 'isNotified' } as const, false)
+// 用量到這個百分比時跳出詢問；null 表示用設定的門檻
+const askAt = atom({ plugin: 'handoff', key: 'nextAskAt' } as const, null as number | null)
 
 const START = '<<<交接開始>>>'
 const END = '<<<交接結束>>>'
@@ -32,6 +33,12 @@ ${END}
 在 ${END} 後面另起一行，原樣寫：「👆 這是交接預覽。沒問題就說「送出」（或輸入 /handoff 送出），要取消就說「取消」。」
 
 要求：精簡但不要漏掉關鍵細節（指令、路徑、錯誤訊息照原文），全部用繁體中文。`
+
+const SEND = '✅ 送出並交接'
+const CANCEL = '❌ 取消'
+const NOW = '🔄 現在交接'
+const LATER = '稍後（多用 10% 再問）'
+const NEVER = '這個對話不要再問'
 
 const USAGE = '交接指令：/handoff（開始）、/handoff 送出、/handoff 取消、/handoff 重來'
 
@@ -72,13 +79,10 @@ function extract(answer: string): { title: string; body: string } | null {
 }
 
 
-// 雲端對話用桌機 app 看時，mod 畫不出任何畫面（surfaces 是空的），預覽和確認都要在對話裡進行
-async function hasSurface($: EngineInterface): Promise<boolean> {
-  return (await $.session.surfaces()).length > 0
-}
-
-// 指令（/handoff）的 hook 還沒結束前不能送出 prompt 或跑 /clear，要等它結束再做
-function afterCommand($: EngineInterface, work: () => Promise<void>) {
+// 指令和這一輪結束的 hook 裡不能等人回答或送出 prompt：
+// 指令還沒結束時送出會被擋；turn.complete 裡的工作超過 60 秒就會被丟掉（等人選對話框常常超過）。
+// 所以都等 hook 結束後，用計時器另外開始。
+function detach($: EngineInterface, work: () => Promise<void>) {
   $.clock.after(50, () => void work().catch(() => $.ui.toast('交接中途出錯，可以用 /handoff 重來')))
 }
 
@@ -109,7 +113,52 @@ async function finish($: EngineInterface, answer: string, autoSend: boolean) {
     await handOver($)
   } else {
     await update($, phase, () => 'preview')
+    await askConfirm($, title)
   }
+}
+
+// 用系統自己的詢問對話框確認（跟 fupan 一樣，雲端用桌機 app 看也會跳出來）；
+// 對話框被關掉時，還是可以在對話裡說「送出」或用 /handoff 送出
+async function askConfirm($: EngineInterface, title: string) {
+  let choice: string
+  try {
+    choice = await $.ui.ask(`交接預覽在上面，新標題會是「${title}」。要送出嗎？想修改就在下方直接寫要改什麼。`, {
+      header: '交接',
+      options: [SEND, CANCEL],
+    })
+  } catch {
+    return
+  }
+  if ((await read($, phase)) !== 'preview') return
+  if (choice === SEND) return handOver($)
+  if (choice === CANCEL) {
+    await reset($)
+    $.ui.toast('已取消交接')
+    return
+  }
+  // 其他文字就是修改意見：請 Claude 照著重寫，寫完會再問一次
+  await update($, phase, () => 'writing')
+  void $.prompt.submit({
+    text: `請依照這個意見修改交接預覽，重新輸出完整格式（從 ${START} 到 ${END}，最後一樣加上確認提示）：${choice}`,
+  })
+}
+
+// 用量到門檻時自動跳出詢問
+async function askStart($: EngineInterface, current: number) {
+  await update($, askAt, () => 101)
+  let choice: string
+  try {
+    choice = await $.ui.ask(`上下文已用 ${current}%。要現在把工作交接到新對話嗎？`, {
+      header: '交接',
+      options: [NOW, LATER, NEVER],
+    })
+  } catch {
+    await update($, askAt, () => current + 10)
+    return
+  }
+  if (choice === NOW) return start($)
+  if (choice === NEVER) return
+  await update($, askAt, () => current + 10)
 }
 
 async function handOver($: EngineInterface) {
@@ -139,7 +188,6 @@ async function reset($: EngineInterface) {
   await update($, pending, () => null)
   await update($, percent, () => null)
   await update($, isHidden, () => false)
-  await update($, isNotified, () => false)
   $.ui.status(undefined)
 }
 
@@ -204,7 +252,7 @@ export const register: Register = (on, options) => {
 
     if (/^(送出|確認|好|ok|send)$/i.test(arg)) {
       if (state !== 'preview') return { text: `現在沒有等確認的交接預覽。${USAGE}` }
-      afterCommand($, () => handOver($))
+      detach($, () => handOver($))
       return { text: '好，正在清空對話並送出摘要…' }
     }
     if (/^(取消|cancel)$/i.test(arg)) {
@@ -213,7 +261,7 @@ export const register: Register = (on, options) => {
     }
     if (/^(重來|重新|reset)$/i.test(arg) || state === 'idle') {
       await reset($)
-      afterCommand($, () => start($))
+      detach($, () => start($))
       return { text: '開始交接，正在請 Claude 寫摘要…' }
     }
     if (state === 'preview') return { text: `上面已經有一份交接預覽在等確認。${USAGE}` }
@@ -228,27 +276,22 @@ export const register: Register = (on, options) => {
     if (state === 'writing') {
       if (e.isAborted) await reset($)
       // 等這一輪真正結束再處理，hook 裡不能直接跑 /clear
-      else void finish($, e.answer, autoSend).catch(() => $.ui.toast('交接中途出錯，可以用 /handoff 重來'))
+      else detach($, () => finish($, e.answer, autoSend))
       return result
     }
     if (state === 'confirmed') {
-      void handOver($).catch(() => $.ui.toast('交接中途出錯，可以用 /handoff 重來'))
+      detach($, () => handOver($))
       return result
     }
 
     const { context } = await $.session.usage()
-    await update($, percent, () => context.percent ?? null)
+    const current = context.percent ?? null
+    await update($, percent, () => current)
+    const due = (await read($, askAt)) ?? threshold
+    if (current !== null && current >= due && !e.isAborted) {
+      detach($, () => askStart($, current))
+    }
     return result
-  })
-
-  // 沒有畫面可以放按鈕時，用量過門檻就請 Claude 在回覆裡提醒一次
-  on('prompt.submit', async ($, e, next) => {
-    const current = await read($, percent)
-    const isDue = current !== null && current >= threshold && (await read($, phase)) === 'idle' && !(await read($, isNotified))
-    if (!isDue || e.origin?.kind === 'plugin' || (await hasSurface($))) return next(e)
-    await update($, isNotified, () => true)
-    const hint = `（handoff 提醒）上下文已用 ${current}%。請在這次回覆的最後另起一行提醒使用者：上下文已用 ${current}%，要交接可以說「幫我交接」或輸入 /handoff。`
-    return next({ ...e, context: [...(e.context ?? []), hint] })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
