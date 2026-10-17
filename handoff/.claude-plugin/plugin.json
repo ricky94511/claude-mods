@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "一鍵交接：上下文用量到門檻時在輸入框上方出現交接按鈕，寫摘要、清空對話、把摘要送進新對話並改標題（續N）",
   "types": "./types/index.d.ts",
   "userConfig": {

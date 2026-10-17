@@ -241,3 +241,41 @@ test('雲端：/handoff 送出 等指令結束後才清空並送出摘要', asyn
   await settle(() => log.sent.includes('還沒做的'))
   expect(log.commands).toEqual(['clear', 'rename [Mod] 一鍵交接（續2）'])
 })
+
+test('桌機 app：用 app 的改名工具改側邊欄標題，沿用目前標題算續幾，不跑 /rename', async ($, on) => {
+  engine(on, { value: 160_000 })
+  const log = { commands: [] as string[], sent: '' }
+  let title = '[閒聊] 詢問模型（續2）'
+  const titles: string[] = []
+  on('command.run', ($, e) => {
+    log.commands.push(`${e.command} ${e.args}`.trim())
+    return {}
+  })
+  on('prompt.submit', ($, e) => {
+    log.sent = e.text
+    return { text: e.text } as never
+  })
+  on('mcp.call', ($, e) => {
+    if (e.server !== 'ccd_session_mgmt') return { value: { content: [], isError: true } } as never
+    if (e.tool === 'set_session_title') {
+      title = String(e.args.title)
+      titles.push(title)
+    }
+    const text = JSON.stringify({ sessionId: 'local_1', title })
+    return { value: { content: [{ type: 'text', text }], isError: false } } as never
+  })
+
+  await $.tool.call({ tool: 'mcp__handoff__start' } as never)
+  picks = ['✅ 送出並交接']
+  await $.turn.complete(turn(ANSWER))
+  await settle(() => titles.length > 0)
+  expect(log.commands).toEqual(['clear'])
+  expect(titles).toEqual(['[閒聊] 詢問模型（續3）'])
+  expect(log.sent).toContain('第 3 段')
+
+  // app 依第一句自動取了標題，第一輪結束時要改回來
+  title = '自動產生的標題'
+  await $.turn.complete(turn('了解'))
+  await settle(() => titles.length > 1)
+  expect(titles).toEqual(['[閒聊] 詢問模型（續3）', '[閒聊] 詢問模型（續3）'])
+})

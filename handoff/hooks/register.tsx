@@ -10,6 +10,8 @@ const isHidden = atom({ plugin: 'handoff', key: 'isHidden' } as const, false)
 const pending = atom({ plugin: 'handoff', key: 'pending' } as const, null as Pending | null)
 // 用到這麼多 token 時跳出詢問；null 表示用設定的門檻
 const askAt = atom({ plugin: 'handoff', key: 'nextAskTokens' } as const, null as number | null)
+// 交接後要保住的新標題，第一輪結束時檢查一次
+const retitle = atom({ plugin: 'handoff', key: 'retitle' } as const, null as string | null)
 
 const START = '<<<交接開始>>>'
 const END = '<<<交接結束>>>'
@@ -43,21 +45,50 @@ const NEVER = '這個對話不要再問'
 
 const USAGE = '交接指令：/handoff（開始）、/handoff 送出、/handoff 取消、/handoff 重來'
 
-type Remote = { id: string; title: string } | null
+// 改標題要走 app 自己的工具：/rename 只改 Claude Code 記的名稱，桌機 app 側邊欄不會跟著變
+const DESKTOP = 'ccd_session_mgmt'
 
-// 雲端 session 才有 claude-code-remote；桌機呼叫會失敗，回傳 null
-async function remoteSession($: EngineInterface): Promise<Remote> {
+type Session = { server: string; id: string; title: string } | null
+
+// 雲端 session 用 claude-code-remote，桌機 app 用 ccd_session_mgmt；都連不到（例如純終端機）回傳 null
+async function currentSession($: EngineInterface): Promise<Session> {
+  const servers: [string, Record<string, unknown>][] = [
+    [REMOTE, {}],
+    [DESKTOP, { session_id: 'self' }],
+  ]
+  for (const [server, args] of servers) {
+    try {
+      const { content, isError } = await $.mcp.call(server, 'get_session', args)
+      if (isError) continue
+      const text = content.find(c => c.type === 'text' && c.text)?.text
+      if (!text) continue
+      const data = JSON.parse(text) as Record<string, unknown>
+      const session = (data.ccr ?? data.session ?? data) as Record<string, unknown>
+      const id = String(session.id ?? session.session_id ?? session.sessionId ?? '')
+      if (id) return { server, id: server === DESKTOP ? 'self' : id, title: String(session.title ?? '') }
+    } catch {
+      // 這個環境沒有這個 server，換下一個
+    }
+  }
+  return null
+}
+
+// 有 app 的改名工具就用它，沒有才退回 /rename；回傳 false 表示改名失敗
+async function setTitle($: EngineInterface, title: string): Promise<boolean> {
+  const session = await currentSession($)
+  if (session) {
+    try {
+      const { isError } = await $.mcp.call(session.server, 'set_session_title', { session_id: session.id, title })
+      if (!isError) return true
+    } catch {
+      // 退回 /rename
+    }
+  }
   try {
-    const { content, isError } = await $.mcp.call(REMOTE, 'get_session', {})
-    if (isError) return null
-    const text = content.find(c => c.type === 'text' && c.text)?.text
-    if (!text) return null
-    const data = JSON.parse(text) as Record<string, unknown>
-    const session = (data.ccr ?? data.session ?? data) as Record<string, unknown>
-    const id = String(session.id ?? session.session_id ?? '')
-    return id ? { id, title: String(session.title ?? '') } : null
+    await $.command.run({ command: 'rename', args: title })
+    return !session
   } catch {
-    return null
+    return false
   }
 }
 
@@ -102,8 +133,8 @@ async function finish($: EngineInterface, answer: string, autoSend: boolean) {
     return
   }
 
-  const remote = await remoteSession($)
-  const { title, segment } = nextTitle(remote?.title || summary.title || '未命名對話')
+  const session = await currentSession($)
+  const { title, segment } = nextTitle(session?.title || summary.title || '未命名對話')
   const text = `【交接】接續上一段對話（第 ${segment} 段）。以下是交接摘要，請先確認理解，再從「還沒做的」第一項開始。標題已經改好，不用再改。\n\n${summary.body}`
 
   await $.store.set('last', { title, text, at: await $.clock.now() })
@@ -171,18 +202,11 @@ async function handOver($: EngineInterface) {
   await update($, phase, () => 'switching')
   await $.command.run({ command: 'clear' })
 
-  try {
-    const remote = await remoteSession($)
-    if (remote) {
-      await $.mcp.call(REMOTE, 'set_session_title', { session_id: remote.id, title: ready.title })
-    } else {
-      await $.command.run({ command: 'rename', args: ready.title })
-    }
-  } catch {
-    $.ui.toast(`標題沒改成功，請手動改成：${ready.title}`)
-  }
-
+  // 先送出再改標題：app 會依新對話的第一句自動取標題，先改的話可能被蓋掉
   void $.prompt.submit({ text: ready.text, asUser: true })
+  if (!(await setTitle($, ready.title))) $.ui.toast(`標題沒改成功，請手動改成：${ready.title}`)
+  // 這一輪結束時再檢查一次，被自動標題蓋掉就改回來
+  await update($, retitle, () => ready.title)
   await reset($)
   $.ui.toast(`已交接到「${ready.title}」`)
 }
@@ -277,6 +301,15 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (e.agentId) return result
     const state = await read($, phase)
+
+    const wanted = await read($, retitle)
+    if (wanted && state === 'idle') {
+      await update($, retitle, () => null)
+      detach($, async () => {
+        const session = await currentSession($)
+        if (session && session.title !== wanted) await setTitle($, wanted)
+      })
+    }
 
     if (state === 'writing') {
       if (e.isAborted) await reset($)

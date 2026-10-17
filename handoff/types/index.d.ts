@@ -10,6 +10,7 @@ declare module 'claude-code' {
       isHidden: boolean
       pending: Pending | null
       nextAskTokens: number | null
+      retitle: string | null
     }
   }
 }
