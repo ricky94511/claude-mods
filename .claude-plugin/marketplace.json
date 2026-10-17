@@ -1,7 +1,18 @@
 {
   "name": "claude-mods",
-  "owner": { "name": "ricky94511" },
+  "owner": {
+    "name": "ricky94511"
+  },
   "plugins": [
-    { "name": "handoff", "source": "./handoff", "description": "一鍵交接：上下文快滿時寫摘要、清空對話、送進新對話並改標題（續N）" }
+    {
+      "name": "handoff",
+      "source": "./handoff",
+      "description": "一鍵交接：上下文快滿時寫摘要、清空對話、送進新對話並改標題（續N）"
+    },
+    {
+      "name": "mod-scout",
+      "source": "./mod-scout",
+      "description": "Mod 探勘：讀最近的對話，提出最多 5 個值得做的 Mod，附原話證據"
+    }
   ]
 }

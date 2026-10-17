@@ -26,6 +26,24 @@ Ricky 的 Claude Code mods。
 - `thresholdTokens`：門檻 token 數，預設 150000。用 token 數而不是百分比，是因為本機上限約 20 萬、雲端 100 萬，同一個百分比差很多
 - `autoSend`：跳過預覽直接交接，預設關
 
+## mod-scout：Mod 探勘
+
+讀最近的對話紀錄（本機 `~/.claude/projects/` 加上雲端帳號的其他對話），找出一直重複交代的事、讓你緊張的動作、每次檢查成果的固定動作，排除 Hook 或 Skill 就能解決的，提出最多 5 個 Mod 提案，每個附原話證據。
+
+### 用法
+
+- `/mod-scout`：開始探勘。先由程式把你親手打的字整理成 `~/.claude/mod-scout/digest-日期.md`（金鑰、token 先遮蔽），再自動送出分析要求
+- 報告出來後跳對話框問要做哪一個；選了就送出「幫我做第 N 個」（先給設計稿、做完問要不要永久保存）
+- `/mod-scout 做 N`：之後再做上次報告的第 N 個
+- 距離上次探勘超過 90 天，開新對話時提醒再跑一次
+
+### 設定（`/config` 裡的 mod-scout 項目）
+
+- `sessions`：讀最近幾次對話，預設 30
+- `remindDays`：幾天提醒一次，預設 90，0 表示不提醒
+
+本機讀紀錄要有 `python3`；沒有的話只讀雲端對話。
+
 ## 安裝
 
 ### 桌機（終端機或桌面 app）
@@ -33,6 +51,7 @@ Ricky 的 Claude Code mods。
 ```
 /plugin marketplace add ricky94511/claude-mods
 /plugin install handoff@claude-mods
+/plugin install mod-scout@claude-mods
 ```
 
 桌面 app：點輸入框旁的 + → Plugins → Add marketplace，輸入 `ricky94511/claude-mods`，再 Add plugin。
@@ -49,15 +68,19 @@ else
   GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 https://github.com/ricky94511/claude-mods /home/user/plugins/claude-mods || true
 fi
 
-if [ -d /home/user/plugins/claude-mods/handoff ]; then
+if [ -d /home/user/plugins/claude-mods ]; then
 python3 - <<'PY'
 import json, pathlib
+root = pathlib.Path("/home/user/plugins/claude-mods")
 p = pathlib.Path.home() / ".claude/settings.json"
 d = json.loads(p.read_text()) if p.exists() else {}
 env = d.setdefault("env", {})
 dirs = [x for x in env.get("CLAUDE_CODE_PLUGIN_DIRS", "").split(":") if x]
-if "/home/user/plugins/claude-mods/handoff" not in dirs:
-    dirs.append("/home/user/plugins/claude-mods/handoff")
+# repo 裡每個有 plugin.json 的資料夾都載入，之後加新 mod 不用再改 setup script
+for mod in sorted(root.glob("*/.claude-plugin/plugin.json")):
+    path = str(mod.parent.parent)
+    if path not in dirs:
+        dirs.append(path)
 env["CLAUDE_CODE_PLUGIN_DIRS"] = ":".join(dirs)
 cmd = "git -C /home/user/plugins/claude-mods pull -q --ff-only origin main 2>/dev/null || true"
 starts = d.setdefault("hooks", {}).setdefault("SessionStart", [])
