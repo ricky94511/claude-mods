@@ -1,0 +1,7 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "ricky94511" },
+  "plugins": [
+    { "name": "handoff", "source": "./handoff", "description": "一鍵交接：上下文快滿時寫摘要、清空對話、送進新對話並改標題（續N）" }
+  ]
+}

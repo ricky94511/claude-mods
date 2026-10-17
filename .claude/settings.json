@@ -1,0 +1,6 @@
+{
+  "extraKnownMarketplaces": {
+    "claude-mods": { "source": { "source": "github", "repo": "ricky94511/claude-mods" } }
+  },
+  "enabledPlugins": { "handoff@claude-mods": true }
+}
