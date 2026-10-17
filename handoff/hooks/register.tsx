@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Phase } from '../types'
+import type { Pending, Phase } from '../types'
 
 const phase = atom({ plugin: 'handoff', key: 'phase' } as const, 'idle' as Phase)
 const percent = atom({ plugin: 'handoff', key: 'percent' } as const, null as number | null)
 const isHidden = atom({ plugin: 'handoff', key: 'isHidden' } as const, false)
+const pending = atom({ plugin: 'handoff', key: 'pending' } as const, null as Pending | null)
 
 const START = '<<<交接開始>>>'
 const END = '<<<交接結束>>>'
@@ -72,6 +73,7 @@ async function start($: EngineInterface) {
   void $.prompt.submit({ text: SUMMARY_PROMPT })
 }
 
+// 摘要寫好後先停在預覽：輸入框上方顯示摘要，按「送出」才清空對話並交接
 async function finish($: EngineInterface, answer: string, autoSend: boolean) {
   const summary = extract(answer)
   if (!summary) {
@@ -80,37 +82,50 @@ async function finish($: EngineInterface, answer: string, autoSend: boolean) {
     $.ui.toast('交接失敗：找不到摘要格式，可以再按一次')
     return
   }
-  await update($, phase, () => 'switching')
 
   const remote = await remoteSession($)
   const { title, segment } = nextTitle(remote?.title || summary.title || '未命名對話')
   const text = `【交接】接續上一段對話（第 ${segment} 段）。以下是交接摘要，請先確認理解，再從「還沒做的」第一項開始。\n\n${summary.body}`
 
   await $.store.set('last', { title, text, at: await $.clock.now() })
+  await update($, pending, () => ({ title, text }))
+  $.ui.status(undefined)
+
+  if (autoSend) {
+    await handOver($)
+  } else {
+    await update($, phase, () => 'preview')
+  }
+}
+
+async function handOver($: EngineInterface) {
+  const ready = await read($, pending)
+  if (!ready) return
+  await update($, phase, () => 'switching')
   await $.command.run({ command: 'clear' })
 
   try {
+    const remote = await remoteSession($)
     if (remote) {
-      await $.mcp.call(REMOTE, 'set_session_title', { session_id: remote.id, title })
+      await $.mcp.call(REMOTE, 'set_session_title', { session_id: remote.id, title: ready.title })
     } else {
-      await $.command.run({ command: 'rename', args: title })
+      await $.command.run({ command: 'rename', args: ready.title })
     }
   } catch {
-    $.ui.toast(`標題沒改成功，請手動改成：${title}`)
+    $.ui.toast(`標題沒改成功，請手動改成：${ready.title}`)
   }
 
-  if (autoSend) {
-    void $.prompt.submit({ text, asUser: true })
-  } else {
-    const { isFilled } = await $.prompt.fill({ text })
-    if (!isFilled) void $.prompt.submit({ text, asUser: true })
-  }
+  void $.prompt.submit({ text: ready.text, asUser: true })
+  await reset($)
+  $.ui.toast(`已交接到「${ready.title}」`)
+}
 
+async function reset($: EngineInterface) {
   await update($, phase, () => 'idle')
+  await update($, pending, () => null)
   await update($, percent, () => null)
   await update($, isHidden, () => false)
   $.ui.status(undefined)
-  $.ui.toast(autoSend ? `已交接到「${title}」` : `已交接到「${title}」，摘要在輸入框，確認後按 Enter 送出`)
 }
 
 export const register: Register = (on, options) => {
@@ -174,7 +189,24 @@ export const register: Register = (on, options) => {
 
     if (isQuiet) return next(e)
 
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
+
+    if (state === 'preview') {
+      const ready = await read($, pending)
+      if (ready) {
+        return (
+          <Box flexDirection="column">
+            <Text bold>交接預覽：{ready.title}</Text>
+            <Markdown text={ready.text} />
+            <Box>
+              <Button key="send" label="✅ 送出並交接" variant="primary" onPress={() => handOver($)} />
+              <Text> </Text>
+              <Button key="cancel" label="取消" onPress={() => reset($)} />
+            </Box>
+          </Box>
+        )
+      }
+    }
 
     if (state !== 'idle') {
       return (

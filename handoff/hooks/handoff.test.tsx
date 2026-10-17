@@ -22,7 +22,7 @@ function engine(on: On, used: { value: number }) {
 
 const turn = (answer: string) => ({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
 
-const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80 } as unknown as RenderPropsOf['AbovePrompt']
+const band0 = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80 } as unknown as RenderPropsOf['AbovePrompt']
 
 const ANSWER = `好的。
 <<<交接開始>>>
@@ -44,37 +44,69 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const used = { value: 30 }
     engine(on, used)
     await $.turn.complete(turn('ok'))
-    const low = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band })
+    const low = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
     expect(await low.find({ key: 'go' })).toBeUndefined()
 
     used.value = 60
     await $.turn.complete(turn('ok'))
-    const high = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band })
+    const high = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
     expect(await high.find({ key: 'go' })).toBeDefined()
   })
 }
 
-test('自然語言觸發後，同一輪的摘要會清空對話、改標題、放進輸入框', async ($, on) => {
+for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+  test(`${surface}：摘要先在輸入框上方預覽，按送出才清空、改標題、送進新對話`, async ($, on) => {
+    engine(on, { value: 60 })
+    const commands: string[] = []
+    let sent = ''
+    on('command.run', ($, e) => {
+      commands.push(`${e.command} ${e.args}`.trim())
+      return {}
+    })
+    on('prompt.submit', ($, e) => {
+      sent = e.text
+      return { text: e.text } as never
+    })
+
+    const started = await $.tool.call({ tool: 'mcp__handoff__start' } as never)
+    expect(JSON.stringify(started)).toContain('<<<交接開始>>>')
+
+    await $.turn.complete(turn(ANSWER))
+    let band = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
+    for (let i = 0; i < 500 && !(await band.find({ key: 'send' })); i++) {
+      band = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
+    }
+
+    expect(await band.find({ key: 'send' })).toBeDefined()
+    expect(await band.find({ text: /第 2 段/ })).toBeDefined()
+    expect(commands).toEqual([])
+
+    await band.press({ key: 'send' })
+    for (let i = 0; i < 500 && !sent; i++) await Promise.resolve()
+
+    expect(commands).toEqual(['clear', 'rename [Mod] 一鍵交接（續2）'])
+    expect(sent).toContain('## 還沒做的')
+    expect(sent).not.toContain('標題：')
+  })
+}
+
+test('預覽時按取消，不會清空對話', async ($, on) => {
   engine(on, { value: 60 })
   const commands: string[] = []
-  let filled = ''
   on('command.run', ($, e) => {
-    commands.push(`${e.command} ${e.args}`.trim())
+    commands.push(e.command)
     return {}
   })
-  on('prompt.fill', ($, e) => {
-    filled = e.text
-    return { isFilled: true, text: e.text } as never
-  })
 
-  const started = await $.tool.call({ tool: 'mcp__handoff__start' } as never)
-  expect(JSON.stringify(started)).toContain('<<<交接開始>>>')
-
+  await $.tool.call({ tool: 'mcp__handoff__start' } as never)
   await $.turn.complete(turn(ANSWER))
-  for (let i = 0; i < 500 && !toasts.some(t => t.includes('已交接')); i++) await Promise.resolve()
+  let band = await $.ui.mount({ plugin: 'handoff', surface: 'desktop', component: 'AbovePrompt', props: band0 })
+  for (let i = 0; i < 500 && !(await band.find({ key: 'cancel' })); i++) {
+    band = await $.ui.mount({ plugin: 'handoff', surface: 'desktop', component: 'AbovePrompt', props: band0 })
+  }
+  await band.press({ key: 'cancel' })
 
-  expect(commands).toEqual(['clear', 'rename [Mod] 一鍵交接（續2）'])
-  expect(filled).toContain('第 2 段')
-  expect(filled).toContain('## 還沒做的')
-  expect(filled).not.toContain('標題：')
+  const after = await $.ui.mount({ plugin: 'handoff', surface: 'desktop', component: 'AbovePrompt', props: band0 })
+  expect(await after.find({ key: 'send' })).toBeUndefined()
+  expect(commands).toEqual([])
 })

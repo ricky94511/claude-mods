@@ -7,9 +7,9 @@ Ricky 的 Claude Code mods。
 上下文用量到門檻（預設 55%）時，輸入框上方會出現「🔄 交接到新對話」按鈕。按下去之後：
 
 1. Claude 寫一份交接摘要（目標、已完成、還沒做的、改過的檔案、要注意的地方）
-2. 自動 `/clear`
-3. 標題改成「原標題（續N）」
-4. 摘要放進輸入框，確認後按 Enter 送出（也可以設定成直接送出）
+2. 摘要顯示在輸入框上方預覽，按「✅ 送出並交接」才繼續，按「取消」就不交接
+3. 自動 `/clear`，標題改成「原標題（續N）」
+4. 摘要當成清空後的第一句送出
 
 觸發方式：
 - 自動：用量到門檻時出現按鈕
@@ -18,7 +18,7 @@ Ricky 的 Claude Code mods。
 
 設定（`/config` 裡的 handoff 項目）：
 - `threshold`：門檻百分比，預設 55
-- `autoSend`：交接後直接送出，預設關（先放進輸入框讓你預覽）
+- `autoSend`：跳過預覽直接交接，預設關
 
 ## 安裝
 
@@ -33,14 +33,35 @@ Ricky 的 Claude Code mods。
 
 ### 雲端（claude.ai/code）
 
-用這個 repo 開的 session 會自動載入（`.claude/settings.json` 已設定）。
-其他 repo 要用的話，把下面這段加進那個 repo 的 `.claude/settings.json`：
+雲端環境會跳過 marketplace，所以改用 setup script 把 repo clone 進容器，再用 `CLAUDE_CODE_PLUGIN_DIRS` 載入。
+在環境設定的 Setup script 最後加上這段（失敗也不會讓 session 起不來）：
 
-```json
-{
-  "extraKnownMarketplaces": {
-    "claude-mods": { "source": { "source": "github", "repo": "ricky94511/claude-mods" } }
-  },
-  "enabledPlugins": { "handoff@claude-mods": true }
-}
+```bash
+if [ -d /home/user/plugins/claude-mods/.git ]; then
+  git -C /home/user/plugins/claude-mods fetch -q --depth 1 origin main && git -C /home/user/plugins/claude-mods reset -q --hard origin/main || true
+else
+  GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 https://github.com/ricky94511/claude-mods /home/user/plugins/claude-mods || true
+fi
+
+if [ -d /home/user/plugins/claude-mods/handoff ]; then
+python3 - <<'PY'
+import json, pathlib
+p = pathlib.Path.home() / ".claude/settings.json"
+d = json.loads(p.read_text()) if p.exists() else {}
+env = d.setdefault("env", {})
+dirs = [x for x in env.get("CLAUDE_CODE_PLUGIN_DIRS", "").split(":") if x]
+if "/home/user/plugins/claude-mods/handoff" not in dirs:
+    dirs.append("/home/user/plugins/claude-mods/handoff")
+env["CLAUDE_CODE_PLUGIN_DIRS"] = ":".join(dirs)
+cmd = "git -C /home/user/plugins/claude-mods pull -q --ff-only origin main 2>/dev/null || true"
+starts = d.setdefault("hooks", {}).setdefault("SessionStart", [])
+if not any(h.get("command") == cmd for s in starts for h in s.get("hooks", [])):
+    starts.append({"hooks": [{"type": "command", "command": cmd}]})
+p.write_text(json.dumps(d, indent=2))
+PY
+fi
+
+exit 0
 ```
+
+改完開新的雲端對話才會生效。
