@@ -4,11 +4,12 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Pending, Phase } from '../types'
 
 const phase = atom({ plugin: 'handoff', key: 'phase' } as const, 'idle' as Phase)
-const percent = atom({ plugin: 'handoff', key: 'percent' } as const, null as number | null)
+// 上下文用了多少 token（最近一次回應的輸入量）
+const used = atom({ plugin: 'handoff', key: 'usedTokens' } as const, null as number | null)
 const isHidden = atom({ plugin: 'handoff', key: 'isHidden' } as const, false)
 const pending = atom({ plugin: 'handoff', key: 'pending' } as const, null as Pending | null)
-// 用量到這個百分比時跳出詢問；null 表示用設定的門檻
-const askAt = atom({ plugin: 'handoff', key: 'nextAskAt' } as const, null as number | null)
+// 用到這麼多 token 時跳出詢問；null 表示用設定的門檻
+const askAt = atom({ plugin: 'handoff', key: 'nextAskTokens' } as const, null as number | null)
 
 const START = '<<<交接開始>>>'
 const END = '<<<交接結束>>>'
@@ -37,7 +38,7 @@ ${END}
 const SEND = '✅ 送出並交接'
 const CANCEL = '❌ 取消'
 const NOW = '🔄 現在交接'
-const LATER = '稍後（多用 10% 再問）'
+const LATER = '稍後（再多用 1.5 萬 token 時再問）'
 const NEVER = '這個對話不要再問'
 
 const USAGE = '交接指令：/handoff（開始）、/handoff 送出、/handoff 取消、/handoff 重來'
@@ -144,21 +145,24 @@ async function askConfirm($: EngineInterface, title: string) {
 }
 
 // 用量到門檻時自動跳出詢問
-async function askStart($: EngineInterface, current: number) {
-  await update($, askAt, () => 101)
+// 15 萬 → 「15 萬」、123456 → 「12.3 萬」
+const wan = (tokens: number) => `${Number((tokens / 10000).toFixed(1))} 萬`
+
+async function askStart($: EngineInterface, current: number, step: number) {
+  await update($, askAt, () => Number.MAX_SAFE_INTEGER)
   let choice: string
   try {
-    choice = await $.ui.ask(`上下文已用 ${current}%。要現在把工作交接到新對話嗎？`, {
+    choice = await $.ui.ask(`上下文已用 ${wan(current)} token。要現在把工作交接到新對話嗎？`, {
       header: '交接',
       options: [NOW, LATER, NEVER],
     })
   } catch {
-    await update($, askAt, () => current + 10)
+    await update($, askAt, () => current + step)
     return
   }
   if (choice === NOW) return start($)
   if (choice === NEVER) return
-  await update($, askAt, () => current + 10)
+  await update($, askAt, () => current + step)
 }
 
 async function handOver($: EngineInterface) {
@@ -186,13 +190,14 @@ async function handOver($: EngineInterface) {
 async function reset($: EngineInterface) {
   await update($, phase, () => 'idle')
   await update($, pending, () => null)
-  await update($, percent, () => null)
+  await update($, used, () => null)
   await update($, isHidden, () => false)
   $.ui.status(undefined)
 }
 
 export const register: Register = (on, options) => {
-  const threshold = Number(options.threshold ?? 55)
+  const threshold = Number(options.thresholdTokens ?? 150000)
+  const step = Math.round(threshold / 10)
   const autoSend = options.autoSend === true
 
   on('session.start', async ($, e, next) => {
@@ -285,17 +290,17 @@ export const register: Register = (on, options) => {
     }
 
     const { context } = await $.session.usage()
-    const current = context.percent ?? null
-    await update($, percent, () => current)
+    const current = context.tokens ?? null
+    await update($, used, () => current)
     const due = (await read($, askAt)) ?? threshold
     if (current !== null && current >= due && !e.isAborted) {
-      detach($, () => askStart($, current))
+      detach($, () => askStart($, current, step))
     }
     return result
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const current = await read($, percent)
+    const current = await read($, used)
     const state = await read($, phase)
     const isQuiet =
       e.props.hasSurvey ||
@@ -326,7 +331,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box>
-        <Text dimColor>上下文已用 {current}%　</Text>
+        <Text dimColor>上下文已用 {wan(current ?? 0)} token　</Text>
         <Button key="go" label="🔄 交接到新對話" variant="primary" onPress={() => start($)} />
         <Text> </Text>
         <Button key="later" label="稍後" onPress={() => update($, isHidden, () => true)} />

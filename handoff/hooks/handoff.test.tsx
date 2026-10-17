@@ -22,7 +22,7 @@ function engine(on: On, used: { value: number }, surfaces: string[] = ['desktop'
     return { result: { questions: (e as never as { questions: unknown }).questions, answers: { [question]: pick } }, text: pick } as never
   })
   mock.store(on)
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100, tokens: used.value, percent: used.value }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000, tokens: used.value, percent: Math.round(used.value / 10_000) }, rateLimits: [] } }))
   on('turn.complete', ($, e) => ({ text: e.answer }) as never)
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.toast', ($, e) => {
@@ -56,13 +56,13 @@ const ANSWER = `好的。
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}：用量過門檻才出現交接按鈕`, async ($, on) => {
-    const used = { value: 30 }
+    const used = { value: 100_000 }
     engine(on, used)
     await $.turn.complete(turn('ok'))
     const low = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
     expect(await low.find({ key: 'go' })).toBeUndefined()
 
-    used.value = 60
+    used.value = 160_000
     await $.turn.complete(turn('ok'))
     const high = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: band0 })
     expect(await high.find({ key: 'go' })).toBeDefined()
@@ -71,7 +71,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
   test(`${surface}：摘要先在輸入框上方預覽，按送出才清空、改標題、送進新對話`, async ($, on) => {
-    engine(on, { value: 60 })
+    engine(on, { value: 160_000 })
     const commands: string[] = []
     let sent = ''
     on('command.run', ($, e) => {
@@ -106,7 +106,7 @@ for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
 }
 
 test('預覽時按取消，不會清空對話', async ($, on) => {
-  engine(on, { value: 60 })
+  engine(on, { value: 160_000 })
   const commands: string[] = []
   on('command.run', ($, e) => {
     commands.push(e.command)
@@ -128,7 +128,7 @@ test('預覽時按取消，不會清空對話', async ($, on) => {
 })
 
 // 雲端對話在桌機 app 上看時沒有畫面：預覽和確認都在對話裡
-function cloud(on: On, used = { value: 60 }) {
+function cloud(on: On, used = { value: 160_000 }) {
   engine(on, used, [])
   const log = { commands: [] as string[], sent: '', hints: [] as string[] }
   on('command.run', ($, e) => {
@@ -189,21 +189,21 @@ test('自動：用量過門檻時跳出詢問，選「現在交接」就開始�
   picks = ['🔄 現在交接']
   await $.turn.complete(turn('ok'))
   await settle(() => log.sent.includes('<<<交接開始>>>'))
-  expect(asked[0]).toContain('上下文已用 60%')
+  expect(asked[0]).toContain('上下文已用 16 萬 token')
   expect(log.sent).toContain('<<<交接開始>>>')
 })
 
-test('自動：選「稍後」就等多用 10% 再問，期間不會一直跳', async ($, on) => {
-  const used = { value: 60 }
+test('自動：選「稍後」就等再多用 1.5 萬 token 再問，期間不會一直跳', async ($, on) => {
+  const used = { value: 160_000 }
   cloud(on, used)
-  picks = ['稍後（多用 10% 再問）']
+  picks = ['稍後（再多用 1.5 萬 token 時再問）']
   await $.turn.complete(turn('ok'))
   await settle(() => asked.length > 0)
-  used.value = 65
+  used.value = 170_000
   await $.turn.complete(turn('ok'))
   await settle(() => false)
   expect(asked).toHaveLength(1)
-  used.value = 71
+  used.value = 176_000
   await $.turn.complete(turn('ok'))
   await settle(() => asked.length > 1)
   expect(asked).toHaveLength(2)

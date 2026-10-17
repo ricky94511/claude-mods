@@ -6,10 +6,10 @@ declare module 'claude-code' {
   interface PluginState {
     handoff: {
       phase: Phase
-      percent: number | null
+      usedTokens: number | null
       isHidden: boolean
       pending: Pending | null
-      nextAskAt: number | null
+      nextAskTokens: number | null
     }
   }
 }

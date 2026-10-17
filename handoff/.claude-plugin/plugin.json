@@ -1,16 +1,16 @@
 {
   "name": "handoff",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "一鍵交接：上下文用量到門檻時在輸入框上方出現交接按鈕，寫摘要、清空對話、把摘要送進新對話並改標題（續N）",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "threshold": {
+    "thresholdTokens": {
       "type": "number",
-      "title": "交接門檻（%）",
-      "description": "上下文用量到這個百分比時顯示交接按鈕",
-      "default": 55,
-      "min": 10,
-      "max": 95
+      "title": "交接門檻（token）",
+      "description": "上下文用到這麼多 token 時詢問要不要交接；本機和雲端同一個標準",
+      "default": 150000,
+      "min": 20000,
+      "max": 900000
     },
     "autoSend": {
       "type": "boolean",
