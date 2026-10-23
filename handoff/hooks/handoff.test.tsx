@@ -279,3 +279,28 @@ test('桌機 app：用 app 的改名工具改側邊欄標題，沿用目前標�
   await settle(() => titles.length > 1)
   expect(titles).toEqual(['[閒聊] 詢問模型（續3）', '[閒聊] 詢問模型（續3）'])
 })
+
+test('雲端：開新的雲端對話送出摘要並封存舊的，不跑 /clear（原地清空會被容器重啟還原）', async ($, on) => {
+  const log = cloud(on)
+  const calls: string[] = []
+  let prompt = ''
+  on('mcp.call', ($, e) => {
+    if (e.server !== 'claude-code-remote') return { value: { content: [], isError: true } } as never
+    calls.push(e.tool)
+    if (e.tool === 'create_session') prompt = String(e.args.prompt)
+    const text = JSON.stringify({ ccr: { id: e.tool === 'create_session' ? 'session_new' : 'session_old', title: '[Mod] 一鍵交接' } })
+    return { value: { content: [{ type: 'text', text }], isError: false } } as never
+  })
+
+  await $.tool.call({ tool: 'mcp__handoff__start' } as never)
+  await $.turn.complete(turn(ANSWER))
+  await settle(() => false)
+  await $.tool.call({ tool: 'mcp__handoff__confirm', action: 'send' } as never)
+  await $.turn.complete(turn('好，交接中…'))
+  await settle(() => calls.includes('archive_session'))
+
+  expect(calls.filter(c => c !== 'get_session')).toEqual(['create_session', 'archive_session'])
+  expect(prompt).toContain('還沒做的')
+  expect(log.commands).toEqual([])
+  expect(log.sent).toBe('')
+})

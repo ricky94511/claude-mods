@@ -196,10 +196,36 @@ async function askStart($: EngineInterface, current: number, step: number) {
   await update($, askAt, () => current + step)
 }
 
+// 雲端對話不能原地 /clear：容器重啟時會接回清空前的對話，交接等於白做。
+// 改成開一個新的雲端對話送出摘要，再封存舊的；開不成才退回 /clear
+async function openNew($: EngineInterface, session: NonNullable<Session>, ready: Pending): Promise<boolean> {
+  try {
+    const { content, isError } = await $.mcp.call(REMOTE, 'create_session', { prompt: ready.text, title: ready.title })
+    if (isError) return false
+    const text = content.find(c => c.type === 'text' && c.text)?.text ?? ''
+    const data = JSON.parse(text) as Record<string, unknown>
+    const created = (data.ccr ?? data.session ?? data) as Record<string, unknown>
+    if (!String(created.id ?? created.session_id ?? '')) return false
+  } catch {
+    return false
+  }
+  await reset($)
+  $.ui.toast(`已開新對話「${ready.title}」，請到對話清單切過去；這個對話會封存`)
+  // 封存會收掉這個容器，放在最後
+  try {
+    await $.mcp.call(REMOTE, 'archive_session', { session_id: session.id })
+  } catch {
+    $.ui.toast('舊對話沒封存成功，請手動封存')
+  }
+  return true
+}
+
 async function handOver($: EngineInterface) {
   const ready = await read($, pending)
   if (!ready) return
   await update($, phase, () => 'switching')
+  const session = await currentSession($)
+  if (session?.server === REMOTE && (await openNew($, session, ready))) return
   await $.command.run({ command: 'clear' })
 
   // 先送出再改標題：app 會依新對話的第一句自動取標題，先改的話可能被蓋掉
